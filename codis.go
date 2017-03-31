@@ -41,6 +41,8 @@ import (
 	"sync"
 	"time"
 
+	"fmt"
+
 	"github.com/garyburd/redigo/redis"
 )
 
@@ -68,10 +70,12 @@ type CodisProxy struct {
 }
 
 type CodisConfig struct {
-	CodisProxys []CodisProxy
+	TickDuration time.Duration
+	CodisProxys  []CodisProxy
 }
 
-func GetClient() *CodisClient {
+func GetClient(config *CodisConfig) *CodisClient {
+	ClientInit(config)
 	return defaultCodisClient
 }
 
@@ -80,7 +84,6 @@ func (r CodisProxy) Address() string {
 }
 
 func (client *CodisClient) SetConfig(config *CodisConfig) {
-	client.Config = config
 }
 
 func clientMonitor() {
@@ -96,13 +99,11 @@ func clientMonitor() {
 			clientCheckOk()
 			clientCheckErr()
 		}
-
 	}
 exits:
 }
 
 func (client *CodisClient) Run() {
-	ClientInit(client.Config)
 	clientMonitor()
 }
 
@@ -115,7 +116,8 @@ func clientCheckOk() {
 		rp := e.Value.(*redis.Pool)
 		test := rp.TestOnBorrow
 
-		if c := rp.Get(); test == nil && test(c, time.Now()) != nil {
+		if c := rp.Get(); test != nil && test(c, time.Now()) != nil {
+			fmt.Println("err")
 			defaultCodisClient.okList.Remove(e)
 			defaultCodisClient.errList.PushBack(rp)
 		} else {
@@ -133,7 +135,8 @@ func clientCheckErr() {
 		rp := e.Value.(*redis.Pool)
 		test := rp.TestOnBorrow
 
-		if c := rp.Get(); test == nil && test(c, time.Now()) == nil {
+		if c := rp.Get(); test != nil && test(c, time.Now()) == nil {
+			fmt.Println("ok")
 			defaultCodisClient.errList.Remove(e)
 			defaultCodisClient.okList.PushBack(rp)
 		} else {
@@ -142,13 +145,15 @@ func clientCheckErr() {
 	}
 }
 
-func ClientInit(c *CodisConfig) {
+func ClientInit(config *CodisConfig) {
 	defaultCodisClient = new(CodisClient)
+	defaultCodisClient.Config = config
+	defaultCodisClient.tickDuration = defaultCodisClient.Config.TickDuration
 	defaultCodisClient.ticker = time.NewTicker(defaultCodisClient.tickDuration)
 	defaultCodisClient.errchan = make(chan *redis.Pool, 16)
 	defaultCodisClient.okchan = make(chan *redis.Pool, 16)
 	defaultCodisClient.exitchan = make(chan bool)
-	for _, proxy := range c.CodisProxys {
+	for _, proxy := range config.CodisProxys {
 		rp := InitRedisPool(proxy)
 		defaultCodisClient.C = append(defaultCodisClient.C, rp)
 		if err := rp.TestOnBorrow(rp.Get(), time.Now()); err != nil {
@@ -156,6 +161,7 @@ func ClientInit(c *CodisConfig) {
 		} else {
 			defaultCodisClient.okList.PushFront(rp)
 		}
+		defaultCodisClient.okList.Front()
 	}
 }
 
@@ -184,6 +190,7 @@ func InitRedisPool(proxy CodisProxy) *redis.Pool {
 		},
 		// 连接测试函数
 		TestOnBorrow: func(c redis.Conn, t time.Time) error {
+			fmt.Println("testOnBorrow")
 			_, err := c.Do("PING")
 			return err
 		},
@@ -197,5 +204,12 @@ func Get() redis.Conn {
 		return nil
 	}
 	rp := e.Value.(*redis.Pool)
-	return rp.Get()
+	conn := rp.Get()
+	err := rp.TestOnBorrow(conn, time.Now())
+	if err != nil {
+		defaultCodisClient.okList.Remove(e)
+		defaultCodisClient.errList.PushBack(rp)
+		return Get()
+	}
+	return conn
 }

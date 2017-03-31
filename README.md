@@ -1,3 +1,6 @@
+## Demo示例
+
+```
 package main
 
 import (
@@ -45,3 +48,8 @@ func main() {
 		fmt.Println("SET OK")
 	}
 }
+
+```
+
+- Ha检测
+- 自动切换
